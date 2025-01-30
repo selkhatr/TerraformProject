@@ -1,0 +1,70 @@
+---
+- name: Set up Spark cluster
+  hosts: spark_cluster
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Java 17
+      apt:
+        name: openjdk-17-jdk
+        state: present
+
+    - name: Download Spark
+      get_url:
+        url: https://downloads.apache.org/spark/spark-3.5.4/spark-3.5.4-bin-hadoop3.tgz
+        dest: /opt/spark-3.5.4-bin-hadoop3.tgz
+
+    - name: Extract Spark
+      unarchive:
+        src: /opt/spark-3.5.4-bin-hadoop3.tgz
+        dest: /opt/
+        remote_src: yes
+
+    - name: Create a symbolic link for Spark
+      file:
+        src: /opt/spark-3.5.4-bin-hadoop3
+        dest: /opt/spark
+        state: link
+
+    - name: Set Spark environment variables in /etc/environment
+      lineinfile:
+        path: /etc/environment
+        line: "{{ item }}"
+      with_items:
+        - "SPARK_HOME=/opt/spark"
+        - 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/spark/bin"'
+
+    - name: Source the environment variables
+      shell: |
+        . /etc/environment
+      args:
+        executable: /bin/bash
+
+- name: Configure Spark Master
+  hosts: spark_master
+  become: yes
+  tasks:
+    - name: Configure Spark Master
+      lineinfile:
+        path: /opt/spark/conf/spark-env.sh
+        line: "export SPARK_MASTER_HOST={{ ansible_host }}"
+        create: yes
+
+    - name: Start Spark master
+      shell: /opt/spark/sbin/start-master.sh
+
+- name: Configure Spark Workers
+  hosts: spark_workers
+  become: yes
+  tasks:
+    - name: Configure Spark workers
+      lineinfile:
+        path: /opt/spark/conf/spark-env.sh
+        line: "export SPARK_WORKER_CORES=2"
+        create: yes
+
+    - name: Start Spark workers
+      shell: /opt/spark/sbin/start-worker.sh spark://{{ hostvars['vm0']['ansible_host'] }}:7077
