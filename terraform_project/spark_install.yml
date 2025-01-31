@@ -3,43 +3,47 @@
   hosts: spark_cluster
   become: yes
   tasks:
-    - name: Update apt cache
+    - name: Update apt cache and install dependencies
       apt:
         update_cache: yes
-
-    - name: Install Java 17
-      apt:
-        name: openjdk-17-jdk
+        name:
+          - openjdk-17-jdk
+          - tar
         state: present
 
-    - name: Download Spark
+    - name: Ensure Spark directory exists
+      file:
+        path: /opt/spark
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Download Spark if not present
       get_url:
         url: https://downloads.apache.org/spark/spark-3.5.4/spark-3.5.4-bin-hadoop3.tgz
         dest: /opt/spark-3.5.4-bin-hadoop3.tgz
+        mode: '0644'
 
     - name: Extract Spark
       unarchive:
         src: /opt/spark-3.5.4-bin-hadoop3.tgz
         dest: /opt/
         remote_src: yes
+        extra_opts: [--strip-components=1]
+        owner: root
+        group: root
 
-    - name: Create a symbolic link for Spark
-      file:
-        src: /opt/spark-3.5.4-bin-hadoop3
-        dest: /opt/spark
-        state: link
+    - name: Set environment variables
+      copy:
+        dest: /etc/profile.d/spark.sh
+        content: |
+          export SPARK_HOME=/opt/spark
+          export PATH=$PATH:$SPARK_HOME/bin
+        mode: '0644'
 
-    - name: Set Spark environment variables in /etc/environment
-      lineinfile:
-        path: /etc/environment
-        line: "{{ item }}"
-      with_items:
-        - "SPARK_HOME=/opt/spark"
-        - 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/spark/bin"'
-
-    - name: Source the environment variables
-      shell: |
-        . /etc/environment
+    - name: Source environment variables
+      shell: source /etc/profile.d/spark.sh
       args:
         executable: /bin/bash
 
@@ -47,24 +51,78 @@
   hosts: spark_master
   become: yes
   tasks:
-    - name: Configure Spark Master
+    - name: Ensure spark-env.sh exists
+      file:
+        path: /opt/spark/conf/spark-env.sh
+        state: touch
+        mode: '0644'
+
+    - name: Set Spark Master configuration
       lineinfile:
         path: /opt/spark/conf/spark-env.sh
         line: "export SPARK_MASTER_HOST={{ ansible_host }}"
         create: yes
 
-    - name: Start Spark master
-      shell: /opt/spark/sbin/start-master.sh
+    - name: Create Spark Master systemd service
+      copy:
+        dest: /etc/systemd/system/spark-master.service
+        content: |
+          [Unit]
+          Description=Apache Spark Master
+          After=network.target
+
+          [Service]
+          User=root
+          ExecStart=/opt/spark/sbin/start-master.sh
+          ExecStop=/opt/spark/sbin/stop-master.sh
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Enable and start Spark Master service
+      systemd:
+        name: spark-master
+        enabled: yes
+        state: started
 
 - name: Configure Spark Workers
   hosts: spark_workers
   become: yes
   tasks:
-    - name: Configure Spark workers
+    - name: Ensure spark-env.sh exists
+      file:
+        path: /opt/spark/conf/spark-env.sh
+        state: touch
+        mode: '0644'
+
+    - name: Set Spark Worker configuration
       lineinfile:
         path: /opt/spark/conf/spark-env.sh
         line: "export SPARK_WORKER_CORES=2"
         create: yes
 
-    - name: Start Spark workers
-      shell: /opt/spark/sbin/start-worker.sh spark://{{ hostvars['vm0']['ansible_host'] }}:7077
+    - name: Create Spark Worker systemd service
+      copy:
+        dest: /etc/systemd/system/spark-worker.service
+        content: |
+          [Unit]
+          Description=Apache Spark Worker
+          After=network.target
+
+          [Service]
+          User=root
+          ExecStart=/opt/spark/sbin/start-worker.sh spark://{{ groups['spark_master'][0] }}:7077
+          ExecStop=/opt/spark/sbin/stop-worker.sh
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Enable and start Spark Worker service
+      systemd:
+        name: spark-worker
+        enabled: yes
+        state: started
